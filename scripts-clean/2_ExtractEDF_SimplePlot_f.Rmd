@@ -1,0 +1,185 @@
+---
+title: "Extract Stats and Plotting"
+author: "SYC"
+date: "2026-03-16"
+output: html_document
+---
+
+```{r}
+
+library(readxl)
+library(gridExtra)
+library(mgcv)
+library(gratia)
+library(mgcViz)
+library(tidygam)
+library(ggplot2)
+library(glue)
+library(tibble)
+library(stringr)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+
+```
+
+#### i. EDF and p-values
+```{r}
+
+edf_f <- as.data.frame(matrix(nrow = 105, ncol = 9))
+colnames(edf_f) <- c("var", "vname", "sex", "edf_res_mu", "stat.chisq_mu", "p_mu", "edf_res_sigma", "stat.chisq_sigma", "p_sigma")
+
+for (i in 1:length(outlist)) {
+  var_name <- names(outlist)[[i]]
+  sum.gg <- summary(outlist[[var_name]]$gam)
+  temp_name <- outlist[[var_name]]$key[1]
+  temp_df <- data.frame(var = temp_name, vname = var_name, sex = "Female", edf_res_mu = round(sum.gg$s.table[1,1],3), stat.chisq_mu = sum.gg$s.table[1,3], p_mu = sum.gg$s.table[1,4], edf_res_sigma = round(sum.gg$s.table[3,1],3), stat.chisq_sigma = sum.gg$s.table[3,3], p_sigma = sum.gg$s.table[3,4])
+
+  edf_f[i,] <- temp_df
+}
+
+
+write.csv(edf_f, '/output/edf_f.csv', row.names = FALSE)
+
+```
+
+### ii. Extract Basis checks
+```{r}
+
+basis_f <- as.data.frame(matrix(nrow = 105, ncol = 5))
+colnames(basis_f) <- c("var", "vname", "sex", "k_index", "p_value")
+
+for (i in 1:length(outlist)) {
+  var_name <- names(outlist)[[i]]
+  sum.basis <- outlist[[var_name]]$check.basis
+  temp_name <- outlist[[var_name]]$key[1]
+  temp_df <- data.frame(var = temp_name, vname = var_name, sex = "Female", k_index = round(sum.basis[1,3],3), p_value = sum.basis[1,4])
+
+  basis_f[i,] <- temp_df
+}
+
+write.csv(basis_f, '/output/basis_f.csv', row.names = FALSE)
+
+```
+
+#### iii. Simple Plot
+```{r}
+
+plotting_values <- list()
+plotlist_mu <- list()
+plotlist_sigma <- list()
+
+
+for (i in c(1:105)) {
+  var_name <- names(outlist)[[i]]
+  
+  gg <- outlist[[var_name]]$gam
+  
+  gg_p <- sample.dat 
+  
+  pred_sample <- predict(gg, newdata = sample.dat, se.fit = TRUE, newdata.guaranteed = TRUE, exclude = "s(subjid)", type = "link")  
+  
+  gg_p <- gg_p %>%  
+    mutate(
+    # --- Location (Mean) ---
+      fit_mu       = pred_sample$fit[,1],
+      se.fit_mu    = pred_sample$se.fit[,1],
+      lower_ci_mu  = fit_mu - 1.96*se.fit_mu,
+      upper_ci_mu  = fit_mu + 1.96*se.fit_mu,
+    
+    # --- Scale (Log-Sigma) ---
+    # We calculate the CI on the log scale first
+      log_fit_sigma = pred_sample$fit[,2],
+      log_se.fit_sigma  = pred_sample$se.fit[,2],
+      log_lower_ci_sigma = log_fit_sigma - 1.96*log_se.fit_sigma, 
+      log_upper_ci_sigma = log_fit_sigma + 1.96*log_se.fit_sigma, 
+    
+    # --- Transform to Raw Sigma ---
+      fit_sigma      = exp(log_fit_sigma),
+      lower_ci_sigma = exp(log_lower_ci_sigma),
+      upper_ci_sigma = exp(log_upper_ci_sigma)
+  )
+
+
+  temp_edf <- edf_f %>%
+    filter(vname == var_name) 
+  temp_edf$temp_y <- gg_p[6,8] + 0.04
+  temp_edf$temp_y_sigma <- gg_p[6,15] + 0.04
+
+  
+  temp_plot_mu <- gg_p %>%
+    ggplot(aes(x = ScanAge, y = fit_mu)) +
+    geom_ribbon(aes(ymin = lower_ci_mu, ymax = upper_ci_mu), alpha = 0.2, fill = "#B24745FF") +
+    geom_line(col = "#B24745FF") +
+    labs(title = var_name) + 
+    theme(legend.position = "none") + 
+    theme_classic(base_size = 8) +
+    theme(text = element_text(size=10)) +
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    geom_text(data = temp_edf, aes(label = glue::glue("edf = {edf_res_mu}"), x = 8, y = temp_y, fontface = ifelse(p_mu < 0.05, "bold", "plain")), size = 3.5) + 
+    theme(axis.title.y=element_blank(),
+          axis.title.x=element_blank(), 
+          plot.margin = margin(t = 1.5, r = 1.5, b = 1.5, l = 1.5, unit = "pt"))  
+  
+  plotlist_mu[[i]] <- temp_plot_mu
+  
+  temp_plot_sigma <- gg_p %>%
+    ggplot(aes(x = ScanAge, y = fit_sigma)) +
+    geom_ribbon(aes(ymin = lower_ci_sigma, ymax = upper_ci_sigma), alpha = 0.2, fill = "#B24745FF") +
+    geom_line(col = "#B24745FF") +
+    labs(title = var_name) + 
+    theme(legend.position = "none") + 
+    theme_classic(base_size = 8) +
+    theme(text = element_text(size=10)) +
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    geom_text(data = temp_edf, aes(label = glue::glue("edf = {edf_res_sigma}"), x = 8, y = temp_y_sigma, fontface = ifelse(p_sigma < 0.05, "bold", "plain")), size = 3.5) + 
+    theme(axis.title.y=element_blank(),
+          axis.title.x=element_blank(),
+          plot.margin = margin(t = 1.5, r = 1.5, b = 1.5, l = 1.5, unit = "pt"))  
+            
+   
+  plotlist_sigma[[i]] <- temp_plot_sigma
+  
+  plotting_values[[var_name]] <- gg_p
+  
+}
+
+```
+
+### Save RDS
+```{r}
+
+setwd('/figs')
+
+saveRDS(plotlist_mu, 
+        file = "plot_mu_females.rds")
+
+saveRDS(plotlist_sigma, 
+        file = "plot_sigma_females.rds")
+
+```
+
+```{r}
+setwd('/figs')
+
+plotlist_mu <- plotlist_mu[lapply(plotlist_mu,length)>0]
+
+pdf(file="yeo7_simple_mu_f.pdf", width=8.2, height=30)
+do.call(grid.arrange,c(plotlist_mu,ncol = 5))
+dev.off()
+
+```
+
+```{r}
+setwd('/figs')
+
+plotlist_sigma <- plotlist_sigma[lapply(plotlist_sigma,length)>0]
+
+pdf(file="yeo7_simple_sigma_f.pdf", width=8.2, height=30)
+do.call(grid.arrange,c(plotlist_sigma,ncol = 5))
+dev.off()
+
+```
+
+
+

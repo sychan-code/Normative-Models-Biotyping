@@ -1,0 +1,1041 @@
+---
+title: "iClusterPlus - Males"
+author: "SYC"
+date: "2026-04-08"
+output: html_document
+---
+
+```{r}
+
+library(psych)
+library(emmeans)
+library(ggpubr)
+library(ComplexHeatmap)
+library(circlize)
+library(iClusterPlus)
+library(parallel)
+library(umap)
+library(gplots)
+library(ggplot2)
+library(ggradar)
+library(scales)
+library(dplyr)
+library(readxl)
+library(lubridate)
+library(stringr)
+library(tidyr)
+library(dplyr)
+
+```
+
+
+### Data
+```{r}
+
+df <- read.csv('/output/z_testing_males.csv')
+
+zdf_b <- df %>%
+  filter(ds == "braco") %>%
+  select(-ds, -sex) %>%
+  na.omit() 
+
+brief <- read.csv('/data/bracobrief_oct2025.csv')
+
+brief_cols <- c("brief_inhibitt", "brief_shiftt", "brief_emocont", "brief_workmemt", "brief_planorgt")
+
+srs <- read.csv('/data/spracosrs_oct2025.csv')
+
+srs <- srs %>%
+  mutate(across(c(10:12), ~as.numeric(.))) %>%    
+  na.omit()
+
+srs_cols <- c("srs2sa_sscale1_t", "srs2sa_sscale2_t", "srs2sa_sscale3_t", "srs2sa_sscale4_t", "srs2sa_sscale5_t")
+
+out <- merge(brief, srs, by = c("subjid"))
+
+out <- out %>%
+  filter(ds == "braco") %>%
+  select(subjid, brief_age, brief_cols, srs_cols) 
+
+demo <- read.csv('/data/all_demo.csv')
+
+out <- merge(out, demo, by = c("subjid"))
+
+out_z <- out %>%
+  filter(sex == "Male") %>%
+  na.omit()
+
+out_z[3:12] <- scale(out_z[3:12], center = TRUE, scale = TRUE) 
+
+```
+
+### Prep
+```{r}
+
+c_df <- merge(zdf_b, out_z, by = c("subjid"))
+
+rownames(c_df) <- c_df[,1]
+
+brain_mat <- c_df %>%
+  select(ends_with("_z")) %>%
+  as.matrix()
+  
+behav_mat <- c_df %>%
+  select(all_of(brief_cols), all_of(srs_cols)) %>%
+  as.matrix()
+
+```
+
+### Tuning
+```{r}
+
+set.seed(123)
+fit_1 <- tune.iClusterPlus(cpus = 4, # Use multiple cores
+                           dt1 = brain_mat, 
+                           dt2 = behav_mat, 
+                           type = c("gaussian", "gaussian"),
+                           K = 1, 
+                           scale.lambda = c(0.6, 0.3))
+    
+
+bic.check <- data.frame(clust = 2, bic.val = sapply(fit_1$fit, function(x) x$BIC), lambrain = fit_1$lambda[,1], lambehv = fit_1$lambda[,2])
+
+best_index <- which.min(bic.check$bic.val)
+
+bestk1 <- bic.check[best_index,] ### 14631.93
+
+set.seed(123)
+fit_2 <- tune.iClusterPlus(cpus = 4, # Use multiple cores
+                           dt1 = brain_mat, 
+                           dt2 = behav_mat, 
+                           type = c("gaussian", "gaussian"),
+                           K = 2, 
+                           scale.lambda = c(0.6, 0.3))
+    
+
+bic.check2 <- data.frame(clust = 3, bic.val = sapply(fit_2$fit, function(x) x$BIC), lambrain = fit_2$lambda[,1], lambehv = fit_2$lambda[,2])
+
+best_index <- which.min(bic.check2$bic.val) 
+
+bestk2 <- bic.check2[best_index,] ## 14002.39
+
+
+set.seed(123)
+fit_3 <- tune.iClusterPlus(cpus = 4, # Use multiple cores
+                           dt1 = brain_mat, 
+                           dt2 = behav_mat, 
+                           type = c("gaussian", "gaussian"),
+                           K = 3, 
+                           scale.lambda = c(0.6, 0.3))
+    
+
+bic.check3 <- data.frame(clust = 4, bic.val = sapply(fit_3$fit, function(x) x$BIC), lambrain = fit_3$lambda[,1], lambehv = fit_3$lambda[,2])
+
+best_index <- which.min(bic.check3$bic.val)
+
+bestk3 <- bic.check3[best_index,] ### 13406.58
+
+
+```
+
+
+### Cluster
+```{r}
+
+set.seed(123)
+final_fit <- iClusterPlus(dt1 = brain_mat, 
+                          dt2 = behav_mat, 
+                          type = c("gaussian", "gaussian"),
+                          lambda = c(bestk3[1,3], bestk3[1,4]),
+                          K = 3)
+
+biotypes <- final_fit$clusters
+biotypes <- as.data.frame(biotypes)
+biotypes$subjid <- row.names(brain_mat)
+
+```
+
+### Weights
+```{r}
+
+# Get the Sparse Weights 
+# This tells you which brain regions and behaviors actually formed the clusters
+brain_weights <- final_fit$beta[[1]]
+brain_weights <- as.data.frame(brain_weights)
+brain_var <- colnames(brain_mat)
+brain_weights$var <- brain_var
+
+behav_weights <- final_fit$beta[[2]]
+behav_weights <- as.data.frame(behav_weights)
+behav_var <- colnames(behav_mat)
+behav_weights$var <- behav_var
+
+
+brainweights1 <- brain_weights %>% select(var, V1) %>% filter(V1 > 0)
+
+final_fit$centers
+
+```
+
+### Plot Behav Weights
+```{r}
+
+colnames(behav_weights)[1:3] <- c("Latent1", "Latent2", "Latent3")
+
+behav_weights <- behav_weights %>%
+  mutate(Measure = case_when(
+    var == "brief_inhibitt" ~ "BRIEF:Inhibit", 
+    var == "brief_shiftt" ~ "BRIEF:Shift",
+    var == "brief_emocont" ~ "BRIEF:Emotional Control",    
+    var == "brief_workmemt" ~ "BRIEF:Working Memory",
+    var == "brief_planorgt" ~ "BRIEF:Plan Organization",    
+    var == "srs2sa_sscale1_t" ~ "SRS:Awareness", 
+    var == "srs2sa_sscale2_t" ~ "SRS:Cognition",
+    var == "srs2sa_sscale3_t" ~ "SRS:Communication",    
+    var == "srs2sa_sscale4_t" ~ "SRS:Motivation",
+    var == "srs2sa_sscale5_t" ~ "SRS:RRB",          
+    .default = "other"
+  ))
+
+# 1. Pivot data to long format
+long_behav_weights <- behav_weights %>%
+  select(-var) %>%
+  pivot_longer(cols = c(Latent1, Latent2, Latent3), 
+               names_to = "Dimension", 
+               values_to = "Weight")
+
+
+fivenum(long_behav_weights$Weight)
+
+col_fun = colorRamp2(c(-0.5, -0.2, 0, 0.2, 0.5), c("#053061","#2166AC","#F7F7F7","#f4a582","#ca0020"))
+
+# 2. Plot
+beh_plot <- ggplot(long_behav_weights, aes(x = Measure, y = Weight, fill = Weight)) +
+  geom_col(alpha = 0.9, width = 0.8) + 
+  scale_fill_gradientn(colors = col_fun(seq(-0.6, 0.6, length.out = 50)), limits = c(-0.6,0.6)) +
+  coord_flip() + 
+  facet_wrap(~Dimension, scales = "free_x") + 
+  scale_y_continuous(n.breaks = 3)  +
+  geom_hline(yintercept = 0, color = "black") + 
+  theme_bw(base_size = 10) +  
+  theme(
+    panel.grid.minor = element_blank(), 
+    panel.spacing = unit(1.5, "lines"),
+    strip.background = element_rect(fill = "grey95"), # Cleaner facet labels
+    strip.text = element_text(face = "bold")
+  ) +   
+  labs(
+    title = "Behavioral Sub-scales: Weights for each Latent Dimension",
+    x = NULL, 
+    y = "Standardized Loading Weight"
+  ) 
+
+beh_plot
+
+```
+
+### Save 
+```{r}
+setwd('/figs/iclusterplus')
+pdf(file="iclust_m_behweights.pdf", width=7, height=2.6)
+beh_plot
+dev.off()
+```
+
+### Plot Brain Weights
+```{r}
+
+colnames(brain_weights)[1:3] <- c("Latent1", "Latent2", "Latent3")
+
+brainplot_prep <- brain_weights %>%
+  mutate(label = str_replace(var, fixed("_z"), "")) %>%
+  separate(label, into = c("from", "to"), sep = "x") %>%
+  select(from, to, starts_with("Latent")) %>%
+  pivot_longer(cols = c(Latent1, Latent2, Latent3), 
+               names_to = "Dimension", 
+               values_to = "Weight") %>%
+  select(from, to, Weight, Dimension)
+
+```
+
+#### Plot
+```{r}
+
+grid.cols = c(VN = "#781286", 
+              SMN = "#4682B4",
+              DAN = "#008037", 
+              VAN = "#C43AFA", 
+              LN = "#BBFB93", 
+              FPN = "#E69422", 
+              DMN = "#CD3E4E", 
+              LAmy = "#F5C710", 
+              RAmy = "#F5C710", 
+              LCau = "#808080", 
+              RCau = "#808080", 
+              LHip = "#6A3D9A", 
+              RHip = "#6A3D9A", 
+              LNAc = "#33A02C", 
+              RNAc = "#33A02C", 
+              LPut = "#FB9A99", 
+              RPut = "#FB9A99",
+              LThal = "#A6CEE3",
+              RThal = "#A6CEE3"
+)  
+
+fivenum(brainplot_prep$Weight)
+
+col_fun = colorRamp2(c(-0.6, -0.2, 0, 0.2, 0.6), c("#053061","#2166AC","#F7F7F7","#f4a582","#ca0020"))
+
+
+full_order <- c("VN", "SMN", "DAN", "VAN", "LN", "FPN", "DMN", 
+                "LAmy", "RAmy", "LCau", "RCau", "LHip", "RHip", 
+                "LNAc", "RNAc", "LPut", "RPut", "LThal", "RThal")
+
+#my_gaps <- c(rep(1, 6), 5, rep(1, 11), 5)
+
+```
+
+#### Save
+```{r}
+setwd('/figs/iclusterplus')
+
+pdf(file="iclust_m_brainweights.pdf", width = 9, height = 3, family = "Helvetica")
+
+circos.clear()
+lay_mat <- matrix(c(1, 2, 3,
+                    4, 4, 4), 
+                  nrow = 2, byrow = TRUE)
+
+layout(lay_mat, heights = c(5, 1))
+par(mar = c(1, 1, 1, 1))
+
+for (dim in unique(brainplot_prep$Dimension)) {
+  
+  circos.clear()
+  
+  group_data <- brainplot_prep[brainplot_prep$Dimension == dim, 1:3]
+  
+  par(cex = 0.8)
+  circos.par(
+    canvas.xlim = c(-1.2, 1.2), 
+    canvas.ylim = c(-1.1, 1.3),    
+    track.margin = c(0.02, 0.02), 
+    start.degree = 90,
+    cell.padding = c(0, 0, 0, 0) # Top, Right, Bottom, Left
+  )
+  
+  chordDiagram(
+    group_data[, 1:3], 
+    order = full_order, 
+    grid.col = grid.cols, 
+    col = col_fun(group_data[[3]]), 
+    transparency = 0.2,
+    annotationTrack = "grid",    
+    link.zindex = rank(abs(group_data[[3]]))
+    )
+  
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+  circos.text(
+    CELL_META$xcenter, 
+    CELL_META$ylim[2] + mm_y(2),        # ylim[2] is the outer edge; mm_y(2) pushes it 2mm further out
+    CELL_META$sector.index, 
+    facing = "clockwise",               # Rotates text to be perpendicular to the circle
+    niceFacing = TRUE,                  # Flips text so it's never upside down
+    adj = c(0, 0.5),                    # Anchors the START of the text to the point (0.5 is vertical centering)
+    cex = 0.6                           # Font size
+      )
+}, bg.border = NA)
+  
+title(paste("Dimension:", dim))
+}
+circos.clear()
+  
+plot.new() 
+lgd <- Legend(
+  title = "Weights", 
+  col_fun = col_fun, 
+  direction = "horizontal", 
+  legend_width = unit(5, "cm"), # Increased width to match 4-column span
+  at = c(-0.5, 0, 0.5)
+  )
+
+draw(lgd, x = unit(0.5, "npc"), y = unit(0, "npc"), just ="center")
+
+dev.off()
+
+```
+
+## UMAP
+```{r}
+
+biotype.cols <- c(
+  "1" = "#374E8CFF", 
+  "2" = "#DF8F44FF", 
+  "3" = "#00A1D5FF", 
+  "4" = "#B24745FF"  
+)
+
+meanZ <- as.data.frame(final_fit$meanZ)
+meanZ <- cbind(biotypes, meanZ)
+
+meanZ <- data.frame(
+  subjid = rownames(brain_mat), 
+  biotypes = final_fit$clusters,
+  Z1 = final_fit$meanZ[,1],
+  Z2 = final_fit$meanZ[,2],
+  Z3 = final_fit$meanZ[,3]  
+)
+
+table(meanZ$biotypes)
+
+umap_m <- umap(final_fit$meanZ)
+colnames(umap_m$layout) <- c("UMAP1","UMAP2")
+plot(umap_m$layout, col=as.factor(meanZ$biotypes), pch=19)
+
+umap_m_clust <- cbind(meanZ, umap_m$layout)
+
+umap_m_clust$biotypes <- as.factor(umap_m_clust$biotypes)
+
+p1 <- umap_m_clust %>%
+  rename(Biotypes = biotypes) %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, col=Biotypes)) + 
+  geom_point(size = 1.5) +
+  scale_color_manual(values = biotype.cols) +  
+  theme_bw(base_size = 8, base_family = "sans") +
+  labs(title = "Individual-Level Clustering of Brain-Behavioral Biotypes", subtitle = "UMAP projection of Latent Dimensions 1 to 3 colored by Biotype assignment") + 
+  theme(
+    legend.position = "left",    
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8)
+  )   
+
+p1
+
+```
+
+### Save 
+```{r}
+setwd('/figs/iclusterplus')
+pdf(file="iclust_m_umap.pdf", width=4.7, height=3)
+p1
+dev.off()
+```
+
+### Radar Plot
+```{r}
+
+cluster_means <- aggregate(final_fit$meanZ ~ final_fit$clusters, FUN = mean)
+colnames(cluster_means) <- c("Biotype", "Z1", "Z2", "Z3")
+
+scaling_key <- cluster_means %>%
+  summarise(across(starts_with("Z"), list(
+    min = ~min(.x, na.rm = TRUE),
+    max = ~max(.x, na.rm = TRUE),
+    midpoint = ~(max(.x, na.rm = TRUE) + min(.x, na.rm = TRUE)) / 2
+  )))
+
+scaling_key <- round(scaling_key,1)
+
+plot_data <- cluster_means %>%
+  mutate(across(starts_with("Z"), ~ rescale(.x))) %>%
+  mutate(Biotype = as.character(Biotype))
+
+colnames(plot_data)[2:4] <- c("Latent Dimension 1", "Latent Dimension 2", "Latent Dimension 3")
+
+plot_clust <- ggradar(plot_data, 
+        base.size = 5,              
+        values.radar = c("Negative", "Average", "Positive"), 
+        group.colours = biotype.cols, 
+        group.line.width = 1.2, 
+        group.point.size = 2.5, 
+        axis.line.colour = "transparent", 
+        legend.position = "none", 
+        background.circle.transparency = 0.1, 
+        axis.label.size = 3, 
+        grid.label.size = 3) 
+
+plot_clust
+
+## Note: figure edited to replace radar values (Negative Average Positive) with the scaling key values for each dimension
+
+```
+
+### Save 
+```{r}
+setwd('/figs/iclusterplus')
+pdf(file="iclust_m_radar.pdf", width=3.5, height=3)
+plot_clust
+dev.off()
+```
+
+
+## BRACO - TESTING
+### Load Behavioral Data
+```{r}
+
+braco.dob <- read.csv('/data/BRACO_Y4-6_age.csv')
+
+braco.dob <- braco.dob %>%
+  select(subjid, dob) %>%
+  rename(cbrthdat = dob)
+
+temp <- read.csv('/data/braco_compiled_20260408.csv')
+
+temp <- temp %>%
+  select(subjid, contains("eqsq"), contains("ssds"), contains("cbcl"), contains("NKT"), contains("ppvt5"), contains("sdq"), contains("tomi"))
+
+temp <- merge(temp, braco.dob, by = c("subjid"), all.x = TRUE)
+
+temp <- temp %>%
+  mutate(eqsqc_age = time_length(interval(ymd(cbrthdat), dmy(eqsqc_dat)), "years")) %>%
+  mutate(ssds_age = time_length(interval(ymd(cbrthdat), dmy(ssds_dat)), "years")) %>%
+  mutate(sdq_age = time_length(interval(ymd(cbrthdat), dmy(sdq_dat)), "years")) %>%
+  select(subjid, eqsqc_age, eqsqc_escore, eqsqc_sscore, ssds_age, ssds_totscore, sdq_age, sdq_totscore, cbcl_age, cbcl_intern_t, cbcl_extern_t, NKT_age, NKT_tot, ppvt5_age, ppvt5_stdscore, tomi_age, tomi_Composite_stdscore)
+
+```
+
+### Merge data
+```{r}
+
+ictest <- merge(meanZ, temp, by = c("subjid"))
+ictest$biotypes <- factor(ictest$biotypes, 
+                     levels = c(1,2,3,4))
+
+```
+
+### Plot ALL
+```{r}
+
+plot_cols <- c("tomi_Composite_stdscore", "eqsqc_escore", "eqsqc_sscore", "NKT_tot", "ppvt5_stdscore", "ssds_totscore", "sdq_totscore", "cbcl_intern_t", "cbcl_extern_t")
+
+## regress out age for those without standardized age-normed scores
+
+plot_all <- ictest %>%
+  select(subjid, biotypes, all_of(plot_cols), eqsqc_age, NKT_age, ssds_age, sdq_age) %>%
+  mutate(eqsqc_escore = residuals(lm(eqsqc_escore ~ eqsqc_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(eqsqc_sscore = residuals(lm(eqsqc_sscore ~ eqsqc_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(NKT_tot = residuals(lm(NKT_tot ~ NKT_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(ssds_totscore = residuals(lm(ssds_totscore ~ ssds_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(sdq_totscore = residuals(lm(sdq_totscore ~ sdq_age, data = cur_data(), na.action = na.exclude))) %>%  
+  select(subjid, biotypes, all_of(plot_cols)) %>%
+  # Convert to long format for faceting
+  pivot_longer(cols = all_of(plot_cols), 
+               names_to = "Var", values_to = "Score") %>%
+  na.omit() %>%
+  mutate(Var = case_when(
+    Var == "tomi_Composite_stdscore" ~ "ToMI Composite", 
+    Var == "eqsqc_escore" ~ "Empathy",
+    Var == "eqsqc_sscore" ~ "Systemizing",    
+    Var == "NKT_tot" ~ "Number Knowledge",
+    Var == "ppvt5_stdscore" ~ "PPVT Language", 
+    Var == "ssds_totscore" ~ "Social Dimensions",    
+    Var == "sdq_totscore" ~ "SDQ Total",
+    Var == "cbcl_intern_t" ~ "CBCL Internalizing",    
+    Var == "cbcl_extern_t" ~ "CBCL Externalizing",     
+    .default = "other"
+  ))  %>%
+  mutate(Var = factor(Var, levels = c(
+    "CBCL Externalizing", "Empathy", "Number Knowledge", 
+    "CBCL Internalizing", "Social Dimensions", "PPVT Language", 
+    "SDQ Total", "ToMI Composite", "Systemizing"))) 
+
+label_data <- plot_all %>%
+  group_by(Var, biotypes) %>%
+  summarise(
+    n = n(),
+    max_val = max(Score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Create the plot
+p_all <- ggplot(plot_all, aes(x = biotypes, y = Score, fill = biotypes)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  geom_text(data = label_data, 
+            aes(x = biotypes, y = max_val, label = paste0("n=", n)),
+            vjust = -1,      # Push text above the coordinate
+            size = 1.75, 
+            fontface = "bold") +   
+  facet_wrap(~Var, scales = "free_y", drop = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +  
+  scale_fill_manual(values = biotype.cols) +
+  theme_minimal(base_size = 8) +
+  labs(title = "Biotype Characterization in BRACO-LD",
+       x = "Biotype", 
+       y = "Age-adjusted Score") +
+  theme(legend.position = "none") +
+  geom_pwc(label = "p.signif", hide.ns = TRUE, method = "emmeans_test", p.adjust.method = "none", label.size = 2.5, bracket.nudge.y = 0.15, tip.length = 0.01)
+
+p_all
+
+
+```
+
+### Save 
+```{r}
+setwd('/figs/boxplots')
+pdf(file="box_all_m.pdf", width=7.5, height=5.5)
+p_all
+dev.off()
+```
+
+### Plot Corrected p
+```{r}
+
+plot_cols <- c("tomi_Composite_stdscore", "eqsqc_escore", "eqsqc_sscore", "NKT_tot", "ppvt5_stdscore", "ssds_totscore", "sdq_totscore", "cbcl_intern_t", "cbcl_extern_t")
+
+plot_all <- ictest %>%
+  select(subjid, biotypes, all_of(plot_cols), eqsqc_age, NKT_age, ssds_age, sdq_age) %>%
+  mutate(eqsqc_escore = residuals(lm(eqsqc_escore ~ eqsqc_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(eqsqc_sscore = residuals(lm(eqsqc_sscore ~ eqsqc_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(NKT_tot = residuals(lm(NKT_tot ~ NKT_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(ssds_totscore = residuals(lm(ssds_totscore ~ ssds_age, data = cur_data(), na.action = na.exclude))) %>%
+  mutate(sdq_totscore = residuals(lm(sdq_totscore ~ sdq_age, data = cur_data(), na.action = na.exclude))) %>%  
+  select(subjid, biotypes, all_of(plot_cols)) %>%
+  # Convert to long format for faceting
+  pivot_longer(cols = all_of(plot_cols), 
+               names_to = "Var", values_to = "Score") %>%
+  na.omit() %>%
+  mutate(Var = case_when(
+    Var == "tomi_Composite_stdscore" ~ "ToMI Composite", 
+    Var == "eqsqc_escore" ~ "Empathy",
+    Var == "eqsqc_sscore" ~ "Systemizing",    
+    Var == "NKT_tot" ~ "Number Knowledge",
+    Var == "ppvt5_stdscore" ~ "PPVT Language", 
+    Var == "ssds_totscore" ~ "Social Dimensions",    
+    Var == "sdq_totscore" ~ "SDQ Total",
+    Var == "cbcl_intern_t" ~ "CBCL Internalizing",    
+    Var == "cbcl_extern_t" ~ "CBCL Externalizing",     
+    .default = "other"
+  ))  %>%
+  mutate(Var = factor(Var, levels = c(
+    "CBCL Externalizing", "Empathy", "Number Knowledge", 
+    "CBCL Internalizing", "Social Dimensions", "PPVT Language", 
+    "SDQ Total", "ToMI Composite", "Systemizing"))) 
+
+label_data <- plot_all %>%
+  group_by(Var, biotypes) %>%
+  summarise(
+    n = n(),
+    max_val = max(Score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Create the plot
+p_all_corrected <- ggplot(plot_all, aes(x = biotypes, y = Score, fill = biotypes)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  geom_text(data = label_data, 
+            aes(x = biotypes, y = max_val, label = paste0("n=", n)),
+            vjust = -1,      # Push text above the coordinate
+            size = 1.75, 
+            fontface = "bold") +   
+  facet_wrap(~Var, scales = "free_y", drop = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +  
+  scale_fill_manual(values = biotype.cols) +
+  theme_minimal(base_size = 8) +
+  labs(title = "Biotype Characterization in BRACO-LD",
+       x = "Biotype", 
+       y = "Age-adjusted Score") +
+  theme(legend.position = "none") +
+  geom_pwc(label = "p.signif", hide.ns = TRUE, method = "emmeans_test", p.adjust.method = "BH", label.size = 2.5, bracket.nudge.y = 0.15, tip.length = 0.01)
+
+p_all_corrected
+
+
+```
+
+### Save 
+```{r}
+setwd('/figs/boxplots')
+pdf(file="box_all_m_bh.pdf", width=7.5, height=5.5)
+p_all_corrected
+dev.off()
+```
+
+
+
+## GUSTO
+### Biotype Assignment
+### Z1
+```{r}
+  
+order_brain_weights <- brain_weights$var
+
+zdf_g <- df %>%
+  filter(ds == "gusto_y7")  
+
+rownames(zdf_g) <- zdf_g$subjid
+
+zdf_g <- zdf_g %>%
+  select(all_of(order_brain_weights)) 
+
+meanZ_g <- as.matrix(zdf_g) %*% as.matrix(brain_weights[,1])
+
+test <- df %>%
+  filter(ds != "spresto")
+
+length(unique(test$subjid))
+
+```
+
+### Z2 
+```{r}
+
+brain_weights_2 <- brain_weights %>%
+  select(V2, var) %>%
+  filter(abs(V2) > 0)
+
+order_brain_weights <- brain_weights_2$var
+
+zdf_g <- df %>%
+  filter(ds == "gusto_y7")  
+
+rownames(zdf_g) <- zdf_g$subjid
+
+zdf_g <- zdf_g %>%
+  select(all_of(order_brain_weights)) 
+
+meanZ_g2 <- as.matrix(zdf_g) %*% as.matrix(brain_weights_2[,1])
+
+```
+
+### Z3
+```{r}
+
+brain_weights_3 <- brain_weights %>%
+  select(V3, var) %>%
+  filter(abs(V3) > 0)
+
+order_brain_weights <- brain_weights_3$var
+
+zdf_g <- df %>%
+  filter(ds == "gusto_y7")  
+
+rownames(zdf_g) <- zdf_g$subjid
+
+zdf_g <- zdf_g %>%
+  select(all_of(order_brain_weights)) 
+
+meanZ_g3 <- as.matrix(zdf_g) %*% as.matrix(brain_weights_3[,1])
+
+```
+
+
+### Combined
+```{r}
+
+meanZ_g_all <- cbind(meanZ_g, meanZ_g2, meanZ_g3)
+
+meanZ_g_all <- as.data.frame(meanZ_g_all)
+
+#meanZ_g_all$subjid <- rownames(meanZ_g_all)
+
+```
+
+
+### Centroids
+```{r}
+
+centroids <- aggregate(final_fit$meanZ ~ final_fit$clusters, FUN = mean)
+centroids_coords <- centroids[,-1]
+
+# Function to find the nearest cluster for each child in the new dataset
+assign_biotype <- function(new_z_row, original_centroids) {
+  # Calculate Euclidean distance to all 4 original centroids
+  distances <- apply(original_centroids, 1, function(c) sqrt(sum((new_z_row - c)^2)))
+  return(which.min(distances)) # Return the index of the closest cluster
+}
+
+# Apply to projected Z scores
+new_biotype_labels <- apply(meanZ_g_all, 1, assign_biotype, original_centroids = centroids_coords)
+
+meanZ_g_all$subjid <- rownames(meanZ_g_all)
+
+new_biotype_labels <- as.data.frame(new_biotype_labels)
+new_biotype_labels$subjid <- rownames(new_biotype_labels)
+
+meanZ_g_all <- merge(meanZ_g_all, new_biotype_labels, by = c("subjid"))
+
+meanZ_g_all <- meanZ_g_all %>%
+  rename(biotypes = new_biotype_labels)
+
+table(meanZ_g_all$biotypes)
+
+```
+
+### GUSTO VALIDATION PREP
+```{r}
+
+dob <- read_excel('data/GUSTO_DOB, Gender & Ethnicity_20210428.xlsx')
+
+dob <- dob %>%
+  select(subjid, cbrthdat) %>%
+  na.omit()
+
+dob$cbrthdat <- ymd(dob$cbrthdat)
+
+gusto_y7 <- read.csv('/data/out_y7.csv')
+
+gusto_y7 <- gusto_y7 %>%
+  select(subjid, contains("cbcl"), searsc_tot_t_y8, searsp_age, searsp_tot_y7, tomtb_age, tomtb_sstot_y9, wiat3_age)
+
+gusto_brief <- read_excel('data/GUSTO_Y07_BRIEF2 Parent Form_20210531.xlsx')
+ 
+gusto_brief <- gusto_brief %>%
+   filter(brief2pf_incclass == "Acceptable") %>%
+   filter(brief2pf_infclass == "Acceptable") %>%
+   select(subjid, brief2pf_age, brief2pf_gec, brief2pf_gec_t)
+ 
+gusto_y7 <- merge(gusto_y7, gusto_brief, by = c("subjid"), all = TRUE)
+
+gusto_srs <- read_excel('data/GUSTO_Y07_SRS-2 School-Age_20201026.xlsx')
+
+gusto_srs <- gusto_srs %>%
+  select(subjid, contains("_t"), srs2sa_dat) %>%
+  separate(srs2sa_dat, c("srs2sa_dat", NA), sep = " ") 
+  
+gusto_srs <- merge(gusto_srs, dob, by = c("subjid"), all.x = TRUE)
+gusto_srs$srs2sa_dat <- ymd(gusto_srs$srs2sa_dat)
+
+gusto_srs <- gusto_srs %>%
+  mutate(srs2sa_age = time_length(interval(cbrthdat, srs2sa_dat), "years")) 
+
+gusto_srs <- gusto_srs %>%
+  select(subjid, srs2sa_age, srs2sa_tot, srs2sa_tot_t) 
+
+gusto_y7 <- merge(gusto_y7, gusto_srs, by = c("subjid"), all = TRUE)
+
+gusto_sears <- read_excel('data/GUSTO_Y07_SEARS-P_20210723.xlsx')
+
+gusto_sears <- gusto_sears %>%
+  select(subjid, searsp_scale1t, searsp_scale2t, searsp_scale3t, searsp_tott) %>%
+  na.omit()
+
+gusto_y7 <- merge(gusto_y7, gusto_sears, by = c("subjid"), all = TRUE)
+
+gusto_wiat <- read_excel('data/GUSTO_Y09_WIAT-III_20210408.xlsx')
+
+gusto_wiat <- gusto_wiat %>%
+  select(subjid, wiat3_pd_ss, wiat3_no_ss, wiat3_sp_ss, wiat3_orf_ss)
+
+gusto_y7 <- merge(gusto_y7, gusto_wiat, by = c("subjid"), all = TRUE)
+
+```
+
+### Merge
+```{r}
+
+hchar <- merge(meanZ_g_all, gusto_y7, by = c("subjid"))
+
+hchar$biotypes <- factor(hchar$biotypes, 
+                     levels = c(1,2,3,4))
+
+```
+
+### Plot ALL T-Scores
+**Nominal p**
+```{r}
+
+plot_cols <- c("brief2pf_gec_t", "srs2sa_tot_t", "searsp_tott", "wiat3_pd_ss", "wiat3_no_ss", "wiat3_sp_ss", "tomtb_sstot_y9", "cbclintprobtscore_y7", "cbclextprobtscore_y7")
+
+# 2. Join these labels back to your main data
+plot_all <- hchar %>%
+  select(subjid, biotypes, all_of(plot_cols), tomtb_age) %>%
+  mutate(tomtb_sstot_y9 = residuals(lm(tomtb_sstot_y9 ~ tomtb_age, data = cur_data(), na.action = na.exclude))) %>%
+  select(subjid, biotypes, all_of(plot_cols)) %>%
+  mutate(across(all_of(plot_cols), as.numeric)) %>%  
+  pivot_longer(cols = all_of(plot_cols), 
+               names_to = "Var", values_to = "Score") %>%
+  na.omit() %>%
+  mutate(Var = case_when(
+    Var == "tomtb_sstot_y9" ~ "ToM Task", 
+    Var == "brief2pf_gec_t" ~ "Executive Function",
+    Var == "srs2sa_tot_t" ~ "Social Impairment",    
+    Var == "searsp_tott" ~ "SEARS-P",
+    Var == "wiat3_pd_ss" ~ "Pseudoword Decoding", 
+    Var == "wiat3_no_ss" ~ "Number Operations",    
+    Var == "wiat3_sp_ss" ~ "Spelling",
+    Var == "cbclintprobtscore_y7" ~ "CBCL Internalizing",    
+    Var == "cbclextprobtscore_y7" ~ "CBCL Externalizing",     
+    .default = "other"
+  ))  %>%
+  mutate(Var = factor(Var, levels = c(
+    "CBCL Externalizing", "SEARS-P", "Number Operations", 
+    "CBCL Internalizing", "Social Impairment", "Pseudoword Decoding", 
+    "Executive Function", "ToM Task", "Spelling"))) 
+
+
+label_data <- plot_all %>%
+  group_by(Var, biotypes) %>%
+  summarise(
+    n = n(),
+    max_val = max(Score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Create the plot
+p_all_g <- ggplot(plot_all, aes(x = biotypes, y = Score, fill = biotypes)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  geom_text(data = label_data, 
+            aes(x = biotypes, y = max_val, label = paste0("n=", n)),
+            vjust = -1,      # Push text above the coordinate
+            size = 1.75, 
+            fontface = "bold") +   
+  facet_wrap(~Var, scales = "free_y", drop = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +  
+  scale_fill_manual(values = biotype.cols) +
+  theme_minimal(base_size = 8) +
+  labs(title = "Biotype Validation in GUSTO Y7",
+       x = "Biotype", 
+       y = "Age-normed Scores") +
+  theme(legend.position = "none") +
+  geom_pwc(label = "p.signif", hide.ns = TRUE, method = "emmeans_test", p.adjust.method = "none", label.size = 2.5, bracket.nudge.y = 0.15, tip.length = 0.01)
+
+p_all_g
+
+
+```
+
+### Save 
+```{r}
+setwd('/figs/boxplots')
+pdf(file="box_all_m_gy7.pdf", width=7.5, height=5.5)
+p_all_g
+dev.off()
+```
+
+### Save Image
+```{r}
+
+save.image('/output/iclusterplus/iclusterplus_m_03052026.RData')
+
+```
+
+## August 2026: Biotypes by Z
+```{r}
+
+y1 <- merge(zdf_b, meanZ, by = c("subjid"))
+
+test <- brain_weights_3 %>%
+  arrange(V3)
+
+```
+
+```{r}
+
+brainz_list <- c("DANxRHip_z", "SMNxRAmy_z", "VNxRHip_z", "FPNxRHip_z", "DANxRAmy_z", "VNxRAmy_z", "LNxFPN_z", "DMNxRHip_z", "FPNxRAmy_z", "FPNxDMN_z")
+
+# Join labels back to your main data
+plot_brainz_boxplot <- y1 %>%
+  select(subjid, biotypes, all_of(brainz_list)) %>%
+  na.omit() %>%
+  # Convert to long format for faceting
+  pivot_longer(cols = brainz_list, 
+               names_to = "Brain Features", values_to = "z_score") 
+
+plot_brainz_boxplot$biotypes <- as.factor(plot_brainz_boxplot$biotypes)
+
+label_data <- plot_brainz_boxplot %>%
+  group_by(`Brain Features`, biotypes) %>%
+  summarise(
+    n = n(),
+    max_val = max(z_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot
+p_brainz <- ggplot(plot_brainz_boxplot, aes(x = biotypes, y = z_score, fill = biotypes)) +
+  geom_boxplot(outlier.size = 0.5) +
+  geom_text(data = label_data, 
+            aes(x = biotypes, y = max_val, label = paste0("n=", n)),
+            vjust = -1,      # Push text above the coordinate
+            size = 1.5, 
+            fontface = "bold") +  
+  facet_wrap(~`Brain Features`, scales = "free_y", nrow = 2) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +  
+  scale_fill_manual(values = biotype.cols) +
+  theme_bw(base_size = 5) +
+  labs(x = "Biotype", 
+       y = "Deviation z scores") +
+  theme(legend.position = "none") +
+  geom_pwc(label = "p.signif", hide.ns = TRUE, method = "emmeans_test", p.adjust.method = "none", label.size = 2.5, bracket.nudge.y = 0.15, tip.length = 0.01)
+
+p_brainz
+
+```
+
+### Save 
+```{r}
+setwd('/figs/iclusterplus/biotypes')
+pdf(file="box_dim3_brain_m.pdf", width=7.5, height=5)
+p_brainz
+dev.off()
+```
+
+## Beh by Z
+```{r}
+
+y2 <- merge(out_z, meanZ, by = c("subjid"))
+
+```
+
+```{r}
+
+plot_behz_boxplot <- y2 %>%
+  select(subjid, biotypes, all_of(behav_var)) %>%
+  na.omit() %>%
+  # Convert to long format for faceting
+  pivot_longer(cols = behav_var, 
+               names_to = "Subscales", values_to = "T-Score") %>%
+  mutate(Subscales = case_when(
+    Subscales == "brief_inhibitt" ~ "BRIEF:Inhibit", 
+    Subscales == "brief_shiftt" ~ "BRIEF:Shift",
+    Subscales == "brief_emocont" ~ "BRIEF:Emotional Control",    
+    Subscales == "brief_workmemt" ~ "BRIEF:Working Memory",
+    Subscales == "brief_planorgt" ~ "BRIEF:Plan Organization",    
+    Subscales == "srs2sa_sscale1_t" ~ "SRS:Awareness", 
+    Subscales == "srs2sa_sscale2_t" ~ "SRS:Cognition",
+    Subscales == "srs2sa_sscale3_t" ~ "SRS:Communication",    
+    Subscales == "srs2sa_sscale4_t" ~ "SRS:Motivation",
+    Subscales == "srs2sa_sscale5_t" ~ "SRS:RRB",          
+    .default = "other"
+  ))  
+
+plot_behz_boxplot$biotypes <- as.factor(plot_behz_boxplot$biotypes)
+
+label_data <- plot_behz_boxplot %>%
+  group_by(Subscales, biotypes) %>%
+  summarise(
+    n = n(),
+    max_val = max(`T-Score`, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Create the plot
+p_behz <- ggplot(plot_behz_boxplot, aes(x = biotypes, y = `T-Score`, fill = biotypes)) +
+  geom_boxplot(outlier.size = 0.5) +
+  geom_text(data = label_data, 
+            aes(x = biotypes, y = max_val, label = paste0("n=", n)),
+            vjust = -1,      # Push text above the coordinate
+            size = 1.5, 
+            fontface = "bold") +  
+  facet_wrap(~Subscales, scales = "free_y", nrow = 2) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +  
+  scale_fill_manual(values = biotype.cols) +
+  theme_bw(base_size = 5) +
+  labs(x = "Biotype", 
+       y = "Standardized T-Scores") +
+  theme(legend.position = "none") +
+  geom_pwc(label = "p.signif", hide.ns = TRUE, method = "emmeans_test", p.adjust.method = "none", label.size = 2.5, bracket.nudge.y = 0.15, tip.length = 0.01)
+
+p_behz
+
+```
+
+### Save 
+```{r}
+setwd('/figs/iclusterplus/biotypes')
+pdf(file="box_dim3_beh_m.pdf", width=7.5, height=5)
+p_behz
+dev.off()
+```
+

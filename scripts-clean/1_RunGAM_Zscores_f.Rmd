@@ -1,0 +1,354 @@
+---
+title: "GAMs Updated March 2026 - Females"
+author: "SYC"
+date: "2026-03-15"
+output: html_document
+---
+
+## Packages
+```{r}
+
+library(mgcv)
+library(gratia)
+library(mgcViz)
+library(tidygam)
+
+
+```
+
+## Data Prep
+### Load data
+#### All FC
+```{r}
+#| echo: false
+
+aa <- read.csv('/data/all_yeo7_fc.csv')
+
+aa.hc <- read.csv('/data/all_yeo7xHc_fc.csv')
+
+aa.amyg <- read.csv('/data/all_yeo7xAmyg_fc.csv')
+
+aa.thal <- read.csv('/data/all_yeo7xThal_fc.csv')
+
+aa.nac <- read.csv('/data/all_yeo7xNAc_fc.csv')
+
+aa.cau <- read.csv('/data/all_yeo7xCau_fc.csv')
+
+aa.put <- read.csv('/data/all_yeo7xPut_fc.csv')
+
+common_colnames <- intersect(colnames(aa), colnames(aa.hc))
+aa.df <- merge(aa, aa.hc, by = c(common_colnames))
+aa.df <- merge(aa.df, aa.amyg, by = c(common_colnames))
+aa.df <- merge(aa.df, aa.thal, by = c(common_colnames))
+aa.df <- merge(aa.df, aa.nac, by = c(common_colnames))
+aa.df <- merge(aa.df, aa.cau, by = c(common_colnames))
+aa.df <- merge(aa.df, aa.put, by = c(common_colnames))
+
+rm(aa, aa.hc, aa.amyg, aa.thal, aa.nac, aa.cau, aa.put)
+
+```
+
+### Check Ethnicity - No others in testing
+```{r}
+
+## Assign others
+
+aa.df[577,3] <- "indian"
+aa.df[578,3] <- "indian"
+
+
+```
+
+
+#### Demo
+```{r}
+
+demo <- read.csv('/data/all_demo.csv')
+
+tr.id <- read.csv('/data/tr.id.csv')
+  
+te.id <- read.csv('/data/te.id.csv')  
+
+
+```
+
+### Training
+```{r}
+
+aa.tr_nh <- merge(tr.id, aa.df, by = c("subjid", "ds", "dx"), all.x = TRUE)
+
+aa.tr_nh <- aa.tr_nh %>%
+  arrange(order)
+
+aa.tr_nh$subjid <- as.factor(aa.tr_nh$subjid)
+aa.tr_nh$sex <- as.factor(aa.tr_nh$sex)
+aa.tr_nh$ethnicity <- as.factor(aa.tr_nh$ethnicity)
+aa.tr_nh$batch <- as.factor(aa.tr_nh$batch)
+contrasts(aa.tr_nh$batch) <- contr.sum(length(levels(aa.tr_nh$batch)))
+
+```
+
+#### Testing
+
+```{r}
+
+aa.te_nh <- merge(te.id, aa.df, by = c("subjid", "ds", "dx"), all.x = TRUE)
+
+aa.te_nh <- aa.te_nh %>%
+  arrange(order) %>%
+  mutate(cohort = ifelse(
+     str_detect(ds, "gusto") & (is.na(dx) | dx==0), "gusto_con", ifelse(   
+    str_detect(ds, "gusto") & dx == 1, "gusto_case", ifelse(
+    ds == "braco", "braco", "spresto"))))
+
+check <- aa.te_nh %>%
+  filter(is.na(cohort))
+
+aa.te_nh$subjid <- as.factor(aa.te_nh$subjid)
+aa.te_nh$sex <- as.factor(aa.te_nh$sex)
+aa.te_nh$ethnicity <- as.factor(aa.te_nh$ethnicity)
+aa.te_nh$batch <- as.factor(aa.te_nh$batch)
+
+
+```
+
+
+### Save data
+```{r}
+setwd('/data')
+
+write.csv(aa.tr_nh, "train_dat_all.csv", row.names = FALSE)
+write.csv(aa.te_nh, "test_dat_all.csv", row.names = FALSE)
+
+```
+
+## START HERE IF DATA IS PREPPED
+```{r}
+
+### note after saving as csv, factors become numeric/characters
+
+aa.tr_nh <- read.csv('/data/train_dat_all.csv')
+
+aa.te_nh <- read.csv('/data/test_dat_all.csv')
+
+test <- aa.te_nh %>%
+  filter(ds != "spresto")
+
+```
+
+### Training & Testing
+```{r}
+
+aa.tr_nh <- aa.tr_nh %>%
+  arrange(order)
+
+aa.tr_nh$subjid <- as.factor(aa.tr_nh$subjid)
+aa.tr_nh$sex <- as.factor(aa.tr_nh$sex)
+aa.tr_nh$ethnicity <- as.factor(aa.tr_nh$ethnicity)
+aa.tr_nh$batch <- as.factor(aa.tr_nh$batch)
+contrasts(aa.tr_nh$batch) <- contr.sum(length(levels(aa.tr_nh$batch)))
+
+check <- aa.te_nh %>%
+  filter(is.na(cohort))
+
+aa.te_nh$subjid <- as.factor(aa.te_nh$subjid)
+aa.te_nh$sex <- as.factor(aa.te_nh$sex)
+aa.te_nh$ethnicity <- as.factor(aa.te_nh$ethnicity)
+aa.te_nh$batch <- as.factor(aa.te_nh$batch)
+
+### check
+#### batch, subjid, ethnicity, sex must be factor
+#### ethnicity should only have 3 levels in testing
+# str(aa.tr_nh) 
+# str(aa.te_nh) 
+```
+
+## 1. GAM
+### Prep
+```{r}
+
+basis.check <- function(b, k.sample = 5000, k.rep = 200) {
+  mgcv:::k.check(b, subsample = k.sample, n.rep = k.rep)
+}
+
+sample.dat = data.frame(ScanAge = c(4.0, 4.4, 4.8, 5.2, 5.6, 6.0, 6.4, 6.8, 7.2, 7.6, 8.0, 8.4, 8.8, 9.2, 9.6, 10.0, 10.4, 10.8, 11.2, 11.6))
+
+sample.dat$QC_meanmotion <- 0.13
+sample.dat$ethnicity <- "chinese"
+sample.dat$batch <- 1
+
+sample.dat$ethnicity <- as.factor(sample.dat$ethnicity)
+sample.dat$batch <- as.factor(sample.dat$batch)
+
+coln <- colnames(aa.tr_nh)[12:116]
+varname <- coln
+
+varname <- str_replace(varname, fixed('1'), "VN")
+varname <- str_replace(varname, fixed('2'), "SMN")
+varname <- str_replace(varname, fixed('3'), "DAN")
+varname <- str_replace(varname, fixed('4'), "VAN")
+varname <- str_replace(varname, fixed('5'), "LN")
+varname <- str_replace(varname, fixed('6'), "FPN")
+varname <- str_replace(varname, fixed('7'), "DMN")
+
+varname <- str_replace(varname, "^y", "")
+
+key <- data.frame(sex = rep("Female", 105), coln = coln, varname = varname)
+
+
+```
+
+### New Function 
+**v March 2026**
+++ change method from gaussian to gaulss to model both location and scale (variance)
+++ change k to fix k of 6
+++ remove plot
+++ remove sample.dat prediction for plotting data 
+```{r}
+
+gam_gaulss_zscores <- function(sex, coln, varname) {
+  data <- aa.tr_nh
+  data <- data %>%
+    filter(sex == !!sex) %>%
+    rename(y = !!coln) 
+  test <- aa.te_nh %>%
+    filter(sex == !!sex) %>%
+    rename(y = !!coln)  
+  
+  gg <- gam(list(
+    y ~ s(ScanAge, k = 6, bs= 'tp') + ethnicity + QC_meanmotion + batch + s(subjid, bs = 'fs'),
+    ~ batch + s(ScanAge, k = 6, bs= 'tp') + QC_meanmotion
+    ),
+    family=gaulss(), data=data, method = "REML")
+  
+  gg_cprep <- getViz(gg)
+  gg_c <- check(gg_cprep,
+      a.qq = list(method = "tnorm", 
+                  a.cipoly = list(fill = "light blue")), 
+      a.respoi = list(size = 0.5), 
+      a.hist = list(bins = 10))
+
+  gg_basis <- basis.check(gg)
+  
+  pred_gg <- predict.gam(gg, newdata = test, type = "link", exclude = "s(subjid)")
+  
+  predz <- test %>%
+    dplyr::select(subjid, sex, ScanAge, y, QC_meanmotion, ethnicity, batch, ds, cohort) %>%
+    na.omit() %>%
+    mutate(fit = pred_gg[,1]) %>%
+    mutate(se = predict.gam(gg, newdata = test, se.fit = TRUE, exclude = "s(subjid)")$se.fit[,1]) %>%
+    mutate(sigma = exp(pred_gg[,2])) %>%
+    mutate(z = (y - fit)/sigma)  
+  
+  all_coefs <- coef(gg)
+  site_par <- data.frame(
+    site = c("batch1", "batch2", "batch3"),
+    mean = c(all_coefs["batch1"], all_coefs["batch2"], (-(all_coefs["batch1"] + all_coefs["batch2"]))), 
+    scale = c(all_coefs["batch1.1"], all_coefs["batch2.1"], (-(all_coefs["batch1.1"] + all_coefs["batch2.1"])))
+  )
+  
+  key = c(coln, varname)
+  
+    list("gam" = gg, "z" = predz, "check.plots" = gg_c, "check.basis" = gg_basis, "site_par" = site_par, "key" = key)
+    
+}
+  
+```
+
+### Test on one
+```{r}
+
+test.basis <- gam_gaulss_zscores("Female", "y1x2", "VNxSMN")
+
+check <- test.basis$z
+summary(test.basis$gam)
+
+test.basis$check.plots
+test.basis$check.basis
+test.basis$site_par
+
+```
+
+### Run on Multiple IDs
+++ add forloop to run GAMs over multiple features vs 1 by 1 
+```{r}
+
+## can run from 1:105, but ran in steps here to check how long it takes/save output in case of errors/crashes
+
+outlist <- list()
+
+for (i in 1:21) {
+  sex_par <- key[i,1]
+  coln_par <- key[i,2]
+  varname_par <- key[i,3]
+  outlist[[varname_par]] <- gam_gaulss_zscores(sex_par, coln_par, varname_par)
+}
+
+for (i in 22:35) {
+  sex_par <- key[i,1]
+  coln_par <- key[i,2]
+  varname_par <- key[i,3]
+  outlist[[varname_par]] <- gam_gaulss_zscores(sex_par, coln_par, varname_par)
+}
+
+for (i in 36:77) {
+  sex_par <- key[i,1]
+  coln_par <- key[i,2]
+  varname_par <- key[i,3]
+  outlist[[varname_par]] <- gam_gaulss_zscores(sex_par, coln_par, varname_par)
+}
+
+for (i in 78:105) {
+  sex_par <- key[i,1]
+  coln_par <- key[i,2]
+  varname_par <- key[i,3]
+  outlist[[varname_par]] <- gam_gaulss_zscores(sex_par, coln_par, varname_par)
+}
+
+check2 <- outlist[["VNxSMN"]]
+sum.check <- summary(check2$gam)
+check2 <- check2$z
+
+```
+
+
+## 2. Extract Z scores
+```{r}
+
+z_f <- data.frame("subjid" = outlist[['VNxSMN']]$z$subjid, "ds" = outlist[['VNxSMN']]$z$ds)
+
+for (i in 1:length(outlist)) {
+  temp_name <- names(outlist)[[i]]
+  temp_df <- outlist[[temp_name]]$z
+  temp_df <- temp_df %>%
+    dplyr::select(subjid, ds, z)
+  colnames(temp_df)[3] <- paste(temp_name, "z", sep = "_")
+  z_f <- merge(z_f, temp_df, by = c("subjid", "ds"))
+}
+
+
+z_f <- z_f %>%
+  mutate(sex = "Female")
+
+```
+
+### Save Z 
+```{r}
+
+setwd('/output')
+
+write.csv(z_f, "z_testing_females.csv", row.names = FALSE)
+
+```
+
+
+### Save RDS
+```{r}
+
+setwd('/output')
+
+saveRDS(outlist, 
+        file = "gaulss_females.rds", 
+        compress = "xz")
+
+```
